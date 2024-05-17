@@ -1,0 +1,5 @@
+
+CUDA_VISIBLE_DEVICES=1 python3 -m cvproj.scripts.train
+
+tmux new-session -s exp_cvproj
+tmux attach -t exp_cvproj

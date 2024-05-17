@@ -24,9 +24,9 @@ class PokemonDataset(Dataset):
         self.tokenizer = tokenizer
 
     def __getitem__(self, idx):
-        idx = idx % 10
-        input_img = self.dataset[idx]["image"]
-        output_img = canny_from_pil(self.dataset[idx]["image"])
+        # idx = idx % 10
+        input_img = canny_from_pil(self.dataset[idx]["image"])
+        output_img = self.dataset[idx]["image"]
         caption = self.dataset[idx]["text"]
 
         # input images scaled to 0,1
@@ -54,8 +54,8 @@ class PokemonDataset(Dataset):
         }
 
     def __len__(self):
-        return 10
-        # return len(self.dataset)
+        # return 10
+        return len(self.dataset)
 
 
 class PairedDataset(Dataset):

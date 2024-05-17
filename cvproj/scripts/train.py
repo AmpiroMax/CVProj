@@ -45,9 +45,10 @@ def main(cfg: TrainConfig):
         os.makedirs(os.path.join(cfg.output_dir, "eval"), exist_ok=True)
 
     net_pix2pix = Pix2Pix_Turbo(
-        lora_rank_unet=cfg.lora_rank_unet, lora_rank_vae=cfg.lora_rank_vae
+        lora_rank_unet=cfg.lora_rank_unet, lora_rank_vae=cfg.lora_rank_vae, device=cfg.device
     )
     net_pix2pix.set_train()
+    net_pix2pix.unet.enable_xformers_memory_efficient_attention()
     net_pix2pix.unet.enable_gradient_checkpointing()
     torch.backends.cuda.matmul.allow_tf32 = True
 
@@ -169,25 +170,27 @@ def main(cfg: TrainConfig):
         std=(0.26862954, 0.26130258, 0.27577711),
     )
 
-    # weight_dtype = torch.float32
-    # if accelerator.mixed_precision == "fp16":
-    #     weight_dtype = torch.float16
-    # elif accelerator.mixed_precision == "bf16":
-    #     weight_dtype = torch.bfloat16
+    weight_dtype = torch.float32
+    if accelerator.mixed_precision == "fp16":
+        weight_dtype = torch.float16
+    elif accelerator.mixed_precision == "bf16":
+        weight_dtype = torch.bfloat16
 
-    # # Move al networksr to device and cast to weight_dtype
-    # net_pix2pix.to(accelerator.device, dtype=weight_dtype)
-    # net_disc.to(accelerator.device, dtype=weight_dtype)
-    # net_lpips.to(accelerator.device, dtype=weight_dtype)
-    # net_clip.to(accelerator.device, dtype=weight_dtype)
+    # Move al networksr to device and cast to weight_dtype
+    net_pix2pix.to(accelerator.device, dtype=weight_dtype)
+    net_disc.to(accelerator.device, dtype=weight_dtype)
+    net_lpips.to(accelerator.device, dtype=weight_dtype)
+    net_clip.to(accelerator.device, dtype=weight_dtype)
 
     # We need to initialize the trackers we use, and also store our configuration.
     # The trackers initializes automatically on the main process.
     if accelerator.is_main_process:
         tracker_config = dict(vars(cfg))
-        accelerator.init_trackers(cfg.tracker_project_name, config=tracker_config)
+        accelerator.init_trackers(
+            cfg.tracker_project_name, config=tracker_config)
 
-    max_train_steps = cfg.epoch_num * len(dataset_train) // cfg.train_batch_size
+    max_train_steps = cfg.epoch_num * \
+        len(dataset_train) // cfg.train_batch_size
     progress_bar = tqdm(
         range(0, max_train_steps),
         initial=0,
@@ -244,11 +247,13 @@ def main(cfg: TrainConfig):
                 )
                 # Reconstruction loss
                 loss_l2 = (
-                    F.mse_loss(x_tgt_pred.float(), x_tgt.float(), reduction="mean")
+                    F.mse_loss(x_tgt_pred.float(),
+                               x_tgt.float(), reduction="mean")
                     * cfg.l_rec
                 )
                 loss_lpips = (
-                    net_lpips(x_tgt_pred.float(), x_tgt.float()).mean() * cfg.l_lpips
+                    net_lpips(x_tgt_pred.float(), x_tgt.float()
+                              ).mean() * cfg.l_lpips
                 )
 
                 loss = loss_l2 + loss_lpips
@@ -279,45 +284,48 @@ def main(cfg: TrainConfig):
                 """
                 Generator loss: fool the discriminator
                 """
-                # x_tgt_pred = net_pix2pix(
-                #     x_src, prompt_tokens=batch["input_ids"], deterministic=True
-                # )
-                # lossG = net_disc(x_tgt_pred, for_G=True).mean() * args.lambda_gan
-                # accelerator.backward(lossG)
-                # if accelerator.sync_gradients:
-                #     accelerator.clip_grad_norm_(layers_to_opt, args.max_grad_norm)
-                # optimizer.step()
-                # lr_scheduler.step()
-                # optimizer.zero_grad(set_to_none=args.set_grads_to_none)
+                x_tgt_pred = net_pix2pix(
+                    x_src, prompt_tokens=batch["input_ids"], deterministic=True
+                )
+                lossG = net_disc(
+                    x_tgt_pred, for_G=True).mean() * cfg.l_gan
+                accelerator.backward(lossG)
+                if accelerator.sync_gradients:
+                    accelerator.clip_grad_norm_(
+                        layers_to_opt, cfg.grad_clip)
+                optimizer.step()
+                lr_scheduler.step()
+                optimizer.zero_grad(set_to_none=True)
 
                 """
                 Discriminator loss: fake image vs real image
                 """
-                # # real image
-                # lossD_real = (
-                #     net_disc(x_tgt.detach(), for_real=True).mean() * args.lambda_gan
-                # )
-                # accelerator.backward(lossD_real.mean())
-                # if accelerator.sync_gradients:
-                #     accelerator.clip_grad_norm_(
-                #         net_disc.parameters(), args.max_grad_norm
-                #     )
-                # optimizer_disc.step()
-                # lr_scheduler_disc.step()
-                # optimizer_disc.zero_grad(set_to_none=args.set_grads_to_none)
-                # # fake image
-                # lossD_fake = (
-                #     net_disc(x_tgt_pred.detach(), for_real=False).mean()
-                #     * args.lambda_gan
-                # )
-                # accelerator.backward(lossD_fake.mean())
-                # if accelerator.sync_gradients:
-                #     accelerator.clip_grad_norm_(
-                #         net_disc.parameters(), args.max_grad_norm
-                #     )
-                # optimizer_disc.step()
-                # optimizer_disc.zero_grad(set_to_none=args.set_grads_to_none)
-                # lossD = lossD_real + lossD_fake
+                # real image
+                lossD_real = (
+                    net_disc(x_tgt.detach(), for_real=True).mean() *
+                    cfg.l_gan
+                )
+                accelerator.backward(lossD_real.mean())
+                if accelerator.sync_gradients:
+                    accelerator.clip_grad_norm_(
+                        net_disc.parameters(), cfg.grad_clip
+                    )
+                optimizer_disc.step()
+                lr_scheduler_disc.step()
+                optimizer_disc.zero_grad(set_to_none=True)
+                # fake image
+                lossD_fake = (
+                    net_disc(x_tgt_pred.detach(), for_real=False).mean()
+                    * cfg.l_gan
+                )
+                accelerator.backward(lossD_fake.mean())
+                if accelerator.sync_gradients:
+                    accelerator.clip_grad_norm_(
+                        net_disc.parameters(), cfg.grad_clip
+                    )
+                optimizer_disc.step()
+                optimizer_disc.zero_grad(set_to_none=True)
+                lossD = lossD_real + lossD_fake
 
             # Checks if the accelerator has performed an optimization step behind the scenes
             if accelerator.sync_gradients:
@@ -327,8 +335,8 @@ def main(cfg: TrainConfig):
                 if accelerator.is_main_process:
                     logs = {}
                     # log all the losses
-                    # logs["lossG"] = lossG.detach().item()
-                    # logs["lossD"] = lossD.detach().item()
+                    logs["lossG"] = lossG.detach().item()
+                    logs["lossD"] = lossD.detach().item()
                     logs["loss_l2"] = loss_l2.detach().item()
                     logs["loss_lpips"] = loss_lpips.detach().item()
                     if cfg.l_clipsim > 0:
@@ -386,14 +394,16 @@ def main(cfg: TrainConfig):
                             x_src = batch_val["conditioning_pixel_values"].to(
                                 cfg.device
                             )
-                            x_tgt = batch_val["output_pixel_values"].to(cfg.device)
+                            x_tgt = batch_val["output_pixel_values"].to(
+                                cfg.device)
                             B, C, H, W = x_src.shape
                             assert B == 1, "Use batch size 1 for eval."
                             with torch.no_grad():
                                 # forward pass
                                 x_tgt_pred = accelerator.unwrap_model(net_pix2pix)(
                                     x_src,
-                                    prompt_tokens=batch_val["input_ids"].to(cfg.device),
+                                    prompt_tokens=batch_val["input_ids"].to(
+                                        cfg.device),
                                     deterministic=True,
                                 )
                                 # compute the reconstruction losses
@@ -416,7 +426,8 @@ def main(cfg: TrainConfig):
                                 caption_tokens = clip.tokenize(
                                     batch_val["caption"], truncate=True
                                 ).to(x_tgt_pred.device)
-                                clipsim, _ = net_clip(x_tgt_pred_renorm, caption_tokens)
+                                clipsim, _ = net_clip(
+                                    x_tgt_pred_renorm, caption_tokens)
                                 clipsim = clipsim.mean()
 
                                 l_l2.append(loss_l2.item())
@@ -462,5 +473,13 @@ def main(cfg: TrainConfig):
 
 
 if __name__ == "__main__":
-    cfg = TrainConfig()
+    cfg = TrainConfig(
+        device="cuda",
+        train_batch_size=4,
+        learning_rate=1e-5,
+        grad_clip=1
+    )
     main(cfg)
+    # print(os.environ["CUDA_VISIBLE_DEVICES"])
+    # for i in range(torch.cuda.device_count()):
+    #     print(torch.cuda.get_device_properties(i).name)

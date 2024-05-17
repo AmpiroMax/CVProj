@@ -35,15 +35,17 @@ class Pix2Pix_Turbo(torch.nn.Module):
         ckpt_folder="checkpoints",
         lora_rank_unet=8,
         lora_rank_vae=4,
+        device: str = "mps"
     ):
         super().__init__()
+        self.device = device
         self.tokenizer = AutoTokenizer.from_pretrained(
             "stabilityai/sd-turbo", subfolder="tokenizer"
         )
         self.text_encoder = CLIPTextModel.from_pretrained(
             "stabilityai/sd-turbo", subfolder="text_encoder"
-        ).to("mps")
-        self.sched = make_1step_sched()
+        ).to(device)
+        self.sched = make_1step_sched(self.device)
 
         vae = AutoencoderKL.from_pretrained("stabilityai/sd-turbo", subfolder="vae")
         vae.encoder.forward = my_vae_encoder_fwd.__get__(
@@ -55,16 +57,16 @@ class Pix2Pix_Turbo(torch.nn.Module):
         # add the skip connection convs
         vae.decoder.skip_conv_1 = torch.nn.Conv2d(
             512, 512, kernel_size=(1, 1), stride=(1, 1), bias=False
-        ).to("mps")
+        ).to(device)
         vae.decoder.skip_conv_2 = torch.nn.Conv2d(
             256, 512, kernel_size=(1, 1), stride=(1, 1), bias=False
-        ).to("mps")
+        ).to(device)
         vae.decoder.skip_conv_3 = torch.nn.Conv2d(
             128, 512, kernel_size=(1, 1), stride=(1, 1), bias=False
-        ).to("mps")
+        ).to(device)
         vae.decoder.skip_conv_4 = torch.nn.Conv2d(
             128, 256, kernel_size=(1, 1), stride=(1, 1), bias=False
-        ).to("mps")
+        ).to(device)
         vae.decoder.ignore_skip = False
         unet = UNet2DConditionModel.from_pretrained(
             "stabilityai/sd-turbo", subfolder="unet"
@@ -237,11 +239,11 @@ class Pix2Pix_Turbo(torch.nn.Module):
             self.target_modules_unet = target_modules_unet
 
         # unet.enable_xformers_memory_efficient_attention()
-        unet.to("mps")
-        vae.to("mps")
+        unet.to(device)
+        vae.to(device)
         self.unet, self.vae = unet, vae
         self.vae.decoder.gamma = 1
-        self.timesteps = torch.tensor([999], device="mps").long()
+        self.timesteps = torch.tensor([999], device=device).long()
         self.text_encoder.requires_grad_(False)
 
     def set_eval(self):
@@ -287,7 +289,7 @@ class Pix2Pix_Turbo(torch.nn.Module):
                 padding="max_length",
                 truncation=True,
                 return_tensors="pt",
-            ).input_ids.to("mps")
+            ).input_ids.to(self.device)
             caption_enc = self.text_encoder(caption_tokens)[0]
         else:
             caption_enc = self.text_encoder(prompt_tokens)[0]
