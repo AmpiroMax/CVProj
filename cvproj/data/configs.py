@@ -19,15 +19,18 @@ class TrainConfig(BaseModel):
     tracker_project_name: str = "CVProj Train Pix2Pix"
     logger_type: str = "wandb"
     output_dir: str = "log"
-    track_fid_metrci_val: bool = False
+    track_fid_metrci_val: bool = True
     image_log_freq: int = 100
     model_log_freq: int = 100
     eval_freq: int = 100
+    num_samples_to_eval: int = 10
 
     # ===================== Model =====================
+    pretrained_path: str = None
     lora_rank_unet: int = 8
     lora_rank_vae: int = 4
     resolution: int = 256
+    diff_steps: int = 1
 
     # ===================== Train =====================
     learning_rate: float = 5e-6
@@ -38,13 +41,14 @@ class TrainConfig(BaseModel):
     train_batch_size: int = 4
     train_dataloader_num_workers: int = 0
     eval_batch_size: int = 1
-    epoch_num: int = 100
+    epoch_num: int = 5
     grad_clip: float = 1.0
 
     # ===================== Losses weights =====================
     l_rec: float = 1
     l_lpips: float = 1
     l_clipsim: float = 4
+    l_gan: float = 0.4
 
     # ===================== Dataset =====================
     dataset_type: str = "pokemon"

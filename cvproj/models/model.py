@@ -4,11 +4,11 @@ from tqdm import tqdm
 from diffusers import DDPMScheduler
 
 
-def make_1step_sched(device: str = "mps"):
+def make_1step_sched(device: str = "mps", diff_steps: int = 1):
     noise_scheduler_1step = DDPMScheduler.from_pretrained(
         "stabilityai/sd-turbo", subfolder="scheduler"
     )
-    noise_scheduler_1step.set_timesteps(1, device=device)
+    noise_scheduler_1step.set_timesteps(diff_steps, device=device)
     noise_scheduler_1step.alphas_cumprod = noise_scheduler_1step.alphas_cumprod.to(
         device
     )
@@ -46,7 +46,8 @@ def my_vae_decoder_fwd(self, sample, latent_embeds=None):
         ]
         # up
         for idx, up_block in enumerate(self.up_blocks):
-            skip_in = skip_convs[idx](self.incoming_skip_acts[::-1][idx] * self.gamma)
+            skip_in = skip_convs[idx](
+                self.incoming_skip_acts[::-1][idx] * self.gamma)
             # add skip
             sample = sample + skip_in
             sample = up_block(sample, latent_embeds)
@@ -69,7 +70,8 @@ def download_url(url, outf):
         response = requests.get(url, stream=True)
         total_size_in_bytes = int(response.headers.get("content-length", 0))
         block_size = 1024  # 1 Kibibyte
-        progress_bar = tqdm(total=total_size_in_bytes, unit="iB", unit_scale=True)
+        progress_bar = tqdm(total=total_size_in_bytes,
+                            unit="iB", unit_scale=True)
         with open(outf, "wb") as file:
             for data in response.iter_content(block_size):
                 progress_bar.update(len(data))

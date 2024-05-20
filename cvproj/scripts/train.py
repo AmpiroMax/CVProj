@@ -21,13 +21,14 @@ import wandb
 from cleanfid.fid import get_folder_features, build_feature_extractor, fid_from_feats
 
 from cvproj.models.pix2pix import Pix2Pix_Turbo
-from cvproj.data.dataset import PairedDataset, PokemonDataset
+from cvproj.data.dataset import PairedDataset, PokemonDataset, PixelDataset, SketchyDataset
 from cvproj.data.configs import TrainConfig
 
 
 def main(cfg: TrainConfig):
     accelerator = Accelerator(
         log_with=cfg.logger_type,
+        gradient_accumulation_steps=20,
     )
 
     if accelerator.is_local_main_process:
@@ -45,8 +46,13 @@ def main(cfg: TrainConfig):
         os.makedirs(os.path.join(cfg.output_dir, "eval"), exist_ok=True)
 
     net_pix2pix = Pix2Pix_Turbo(
-        lora_rank_unet=cfg.lora_rank_unet, lora_rank_vae=cfg.lora_rank_vae, device=cfg.device
+        pretrained_path=cfg.pretrained_path,
+        lora_rank_unet=cfg.lora_rank_unet,
+        lora_rank_vae=cfg.lora_rank_vae,
+        device=cfg.device,
+        diff_steps=cfg.diff_steps
     )
+
     net_pix2pix.set_train()
     net_pix2pix.unet.enable_xformers_memory_efficient_attention()
     net_pix2pix.unet.enable_gradient_checkpointing()
@@ -109,15 +115,35 @@ def main(cfg: TrainConfig):
         power=cfg.lr_power,
     )
 
-    if cfg.dataset_type == "pokemon":
+    if cfg.dataset_type == "sketchy":
+        dataset_train = SketchyDataset(
+            split="train",
+            dataset_folder=cfg.dataset_folder,
+            tokenizer=net_pix2pix.tokenizer,
+        )
+        dataset_val = SketchyDataset(
+            split="val",
+            dataset_folder=cfg.dataset_folder,
+            tokenizer=net_pix2pix.tokenizer,
+        )
+    elif cfg.dataset_type == "pokemon":
         dataset_train = PokemonDataset(
             split="train",
             tokenizer=net_pix2pix.tokenizer,
         )
-        # dataset_val = PokemonDataset(
-        #     split="test",
-        #     tokenizer=net_pix2pix.tokenizer,
-        # )
+        dataset_val = PokemonDataset(
+            split="train",
+            tokenizer=net_pix2pix.tokenizer,
+        )
+    elif cfg.dataset_type == "pixel":
+        dataset_train = PixelDataset(
+            split="train",
+            tokenizer=net_pix2pix.tokenizer,
+        )
+        dataset_val = PixelDataset(
+            split="train",
+            tokenizer=net_pix2pix.tokenizer,
+        )
 
     elif cfg.dataset_type == "paired":
         dataset_train = PairedDataset(
@@ -140,11 +166,10 @@ def main(cfg: TrainConfig):
         num_workers=cfg.train_dataloader_num_workers,
     )
 
-    # dl_val = torch.utils.data.DataLoader(
-    #     dataset_val, batch_size=cfg.eval_batch_size, shuffle=False, num_workers=0
-    # )
+    dl_val = torch.utils.data.DataLoader(
+        dataset_val, batch_size=cfg.eval_batch_size, shuffle=False, num_workers=0
+    )
 
-    # Prepare everything with our `accelerator`.
     (
         net_pix2pix,
         net_disc,
@@ -217,7 +242,7 @@ def main(cfg: TrainConfig):
             return np.array(out_pil)
 
         ref_stats = get_folder_features(
-            os.path.join(cfg.dataset_folder, "test_B"),
+            os.path.join(cfg.dataset_folder, "val"),
             model=feat_model,
             num_workers=0,
             num=None,
@@ -255,6 +280,8 @@ def main(cfg: TrainConfig):
                     net_lpips(x_tgt_pred.float(), x_tgt.float()
                               ).mean() * cfg.l_lpips
                 )
+                # loss_l2 = torch.tensor(-1)
+                # loss_lpips = torch.tensor(-1)
 
                 loss = loss_l2 + loss_lpips
                 # CLIP similarity loss
@@ -271,7 +298,7 @@ def main(cfg: TrainConfig):
                     )
                     clipsim, _ = net_clip(x_tgt_pred_renorm, caption_tokens)
                     loss_clipsim = 1 - clipsim.mean() / 100
-                    loss += loss_clipsim * cfg.l_clipsim
+                    loss = loss_clipsim * cfg.l_clipsim
 
                 accelerator.backward(loss, retain_graph=False)
 
@@ -290,6 +317,7 @@ def main(cfg: TrainConfig):
                 lossG = net_disc(
                     x_tgt_pred, for_G=True).mean() * cfg.l_gan
                 accelerator.backward(lossG)
+
                 if accelerator.sync_gradients:
                     accelerator.clip_grad_norm_(
                         layers_to_opt, cfg.grad_clip)
@@ -306,6 +334,7 @@ def main(cfg: TrainConfig):
                     cfg.l_gan
                 )
                 accelerator.backward(lossD_real.mean())
+
                 if accelerator.sync_gradients:
                     accelerator.clip_grad_norm_(
                         net_disc.parameters(), cfg.grad_clip
@@ -313,6 +342,7 @@ def main(cfg: TrainConfig):
                 optimizer_disc.step()
                 lr_scheduler_disc.step()
                 optimizer_disc.zero_grad(set_to_none=True)
+
                 # fake image
                 lossD_fake = (
                     net_disc(x_tgt_pred.detach(), for_real=False).mean()
@@ -323,6 +353,7 @@ def main(cfg: TrainConfig):
                     accelerator.clip_grad_norm_(
                         net_disc.parameters(), cfg.grad_clip
                     )
+
                 optimizer_disc.step()
                 optimizer_disc.zero_grad(set_to_none=True)
                 lossD = lossD_real + lossD_fake
@@ -344,12 +375,12 @@ def main(cfg: TrainConfig):
                     progress_bar.set_postfix(**logs)
 
                     # viz some images
-                    if global_step % cfg.image_log_freq == 1 and False:
+                    if global_step % cfg.image_log_freq == 1:
                         log_dict = {
                             "train/source": [
                                 wandb.Image(
                                     x_src[idx].float().detach().cpu(),
-                                    caption=f"idx={idx}",
+                                    caption=f"{batch['caption'][idx]}",
                                 )
                                 for idx in range(B)
                             ],
@@ -379,17 +410,17 @@ def main(cfg: TrainConfig):
                         accelerator.unwrap_model(net_pix2pix).save_model(outf)
 
                     # compute validation set FID, L2, LPIPS, CLIP-SIM
-                    if global_step % cfg.eval_freq == 1 and False:
+                    if global_step % cfg.eval_freq == 1:
                         l_l2, l_lpips, l_clipsim = [], [], []
-                        if args.track_val_fid:
+                        if cfg.track_fid_metrci_val:
                             os.makedirs(
                                 os.path.join(
-                                    args.output_dir, "eval", f"fid_{global_step}"
+                                    cfg.output_dir, "eval", f"fid_{global_step}"
                                 ),
                                 exist_ok=True,
                             )
                         for step, batch_val in enumerate(dl_val):
-                            if step >= args.num_samples_eval:
+                            if step >= cfg.num_samples_to_eval:
                                 break
                             x_src = batch_val["conditioning_pixel_values"].to(
                                 cfg.device
@@ -433,22 +464,23 @@ def main(cfg: TrainConfig):
                                 l_l2.append(loss_l2.item())
                                 l_lpips.append(loss_lpips.item())
                                 l_clipsim.append(clipsim.item())
+
                             # save output images to file for FID evaluation
-                            if args.track_val_fid:
+                            if cfg.track_fid_metrci_val:
                                 output_pil = transforms.ToPILImage()(
                                     x_tgt_pred[0].cpu() * 0.5 + 0.5
                                 )
                                 outf = os.path.join(
-                                    args.output_dir,
+                                    cfg.output_dir,
                                     "eval",
                                     f"fid_{global_step}",
                                     f"val_{step}.png",
                                 )
                                 output_pil.save(outf)
-                        if args.track_val_fid:
+                        if cfg.track_fid_metrci_val:
                             curr_stats = get_folder_features(
                                 os.path.join(
-                                    args.output_dir, "eval", f"fid_{global_step}"
+                                    cfg.output_dir, "eval", f"fid_{global_step}"
                                 ),
                                 model=feat_model,
                                 num_workers=0,
@@ -477,7 +509,12 @@ if __name__ == "__main__":
         device="cuda",
         train_batch_size=4,
         learning_rate=1e-5,
-        grad_clip=1
+        grad_clip=1,
+        dataset_type="sketchy",
+        dataset_folder="/home/patratskiy_ma/study/CVProj/data/SketchyCaptions",
+        epoch_num=5,
+        # pretrained_path="/home/patratskiy_ma/study/CVProj/log_finetune/checkpoints/model_1501.pkl",
+        output_dir="exp/sketchy_v2"
     )
     main(cfg)
     # print(os.environ["CUDA_VISIBLE_DEVICES"])

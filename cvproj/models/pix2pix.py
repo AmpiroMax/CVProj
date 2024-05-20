@@ -1,3 +1,4 @@
+from cvproj.models.model import make_1step_sched, my_vae_encoder_fwd, my_vae_decoder_fwd
 import os
 import requests
 import sys
@@ -11,7 +12,6 @@ from peft import LoraConfig
 
 p = "src/"
 sys.path.append(p)
-from cvproj.models.model import make_1step_sched, my_vae_encoder_fwd, my_vae_decoder_fwd
 
 
 class TwinConv(torch.nn.Module):
@@ -35,7 +35,8 @@ class Pix2Pix_Turbo(torch.nn.Module):
         ckpt_folder="checkpoints",
         lora_rank_unet=8,
         lora_rank_vae=4,
-        device: str = "mps"
+        device: str = "mps",
+        diff_steps: int = 1
     ):
         super().__init__()
         self.device = device
@@ -45,9 +46,10 @@ class Pix2Pix_Turbo(torch.nn.Module):
         self.text_encoder = CLIPTextModel.from_pretrained(
             "stabilityai/sd-turbo", subfolder="text_encoder"
         ).to(device)
-        self.sched = make_1step_sched(self.device)
+        self.sched = make_1step_sched(self.device, diff_steps=diff_steps)
 
-        vae = AutoencoderKL.from_pretrained("stabilityai/sd-turbo", subfolder="vae")
+        vae = AutoencoderKL.from_pretrained(
+            "stabilityai/sd-turbo", subfolder="vae")
         vae.encoder.forward = my_vae_encoder_fwd.__get__(
             vae.encoder, vae.encoder.__class__
         )
@@ -79,7 +81,8 @@ class Pix2Pix_Turbo(torch.nn.Module):
             if not os.path.exists(outf):
                 print(f"Downloading checkpoint to {outf}")
                 response = requests.get(url, stream=True)
-                total_size_in_bytes = int(response.headers.get("content-length", 0))
+                total_size_in_bytes = int(
+                    response.headers.get("content-length", 0))
                 block_size = 1024  # 1 Kibibyte
                 progress_bar = tqdm(
                     total=total_size_in_bytes, unit="iB", unit_scale=True
@@ -119,11 +122,13 @@ class Pix2Pix_Turbo(torch.nn.Module):
             # download from url
             url = "https://www.cs.cmu.edu/~img2img-turbo/models/sketch_to_image_stochastic_lora.pkl"
             os.makedirs(ckpt_folder, exist_ok=True)
-            outf = os.path.join(ckpt_folder, "sketch_to_image_stochastic_lora.pkl")
+            outf = os.path.join(
+                ckpt_folder, "sketch_to_image_stochastic_lora.pkl")
             if not os.path.exists(outf):
                 print(f"Downloading checkpoint to {outf}")
                 response = requests.get(url, stream=True)
-                total_size_in_bytes = int(response.headers.get("content-length", 0))
+                total_size_in_bytes = int(
+                    response.headers.get("content-length", 0))
                 block_size = 1024  # 1 Kibibyte
                 progress_bar = tqdm(
                     total=total_size_in_bytes, unit="iB", unit_scale=True
@@ -183,6 +188,42 @@ class Pix2Pix_Turbo(torch.nn.Module):
             for k in sd["state_dict_unet"]:
                 _sd_unet[k] = sd["state_dict_unet"][k]
             unet.load_state_dict(_sd_unet)
+
+            target_modules_vae = [
+                "conv1",
+                "conv2",
+                "conv_in",
+                "conv_shortcut",
+                "conv",
+                "conv_out",
+                "skip_conv_1",
+                "skip_conv_2",
+                "skip_conv_3",
+                "skip_conv_4",
+                "to_k",
+                "to_q",
+                "to_v",
+                "to_out.0",
+            ]
+            target_modules_unet = [
+                "to_k",
+                "to_q",
+                "to_v",
+                "to_out.0",
+                "conv",
+                "conv1",
+                "conv2",
+                "conv_shortcut",
+                "conv_out",
+                "proj_in",
+                "proj_out",
+                "ff.net.2",
+                "ff.net.0.proj",
+            ]
+            self.lora_rank_unet = lora_rank_unet
+            self.lora_rank_vae = lora_rank_vae
+            self.target_modules_vae = target_modules_vae
+            self.target_modules_unet = target_modules_unet
 
         elif pretrained_name is None and pretrained_path is None:
             print("Initializing model with random weights")
@@ -308,7 +349,8 @@ class Pix2Pix_Turbo(torch.nn.Module):
             ).prev_sample
             self.vae.decoder.incoming_skip_acts = self.vae.encoder.current_down_blocks
             output_image = (
-                self.vae.decode(x_denoised / self.vae.config.scaling_factor).sample
+                self.vae.decode(
+                    x_denoised / self.vae.config.scaling_factor).sample
             ).clamp(-1, 1)
         else:
             # scale the lora weights based on the r value
@@ -333,7 +375,8 @@ class Pix2Pix_Turbo(torch.nn.Module):
             self.vae.decoder.incoming_skip_acts = self.vae.encoder.current_down_blocks
             self.vae.decoder.gamma = r
             output_image = (
-                self.vae.decode(x_denoised / self.vae.config.scaling_factor).sample
+                self.vae.decode(
+                    x_denoised / self.vae.config.scaling_factor).sample
             ).clamp(-1, 1)
         return output_image
 

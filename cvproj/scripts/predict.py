@@ -38,7 +38,7 @@ def predcit_simple(
             B, C, H, W = c_t.shape
             noise = torch.randn((1, 4, H // 8, W // 8), device=c_t.device)
             output_image = model(
-                c_t, prompt, deterministic=False, r=cfg.gamma, noise_map=noise
+                c_t, prompt, deterministic=False, r=cfg.lora_gamma, noise_map=noise
             )
 
         else:
@@ -73,10 +73,12 @@ def predict(args) -> None:
     # translate the image
     with torch.no_grad():
         if args.model_name == "edge_to_image":
-            canny = canny_from_pil(input_image, args.low_threshold, args.high_threshold)
+            canny = canny_from_pil(
+                input_image, args.low_threshold, args.high_threshold)
             canny_viz_inv = Image.fromarray(255 - np.array(canny))
             canny_viz_inv.save(
-                os.path.join(args.output_dir, bname.replace(".png", "_canny.png"))
+                os.path.join(args.output_dir, bname.replace(
+                    ".png", "_canny.png"))
             )
             c_t = F.to_tensor(canny).unsqueeze(0).to("mps")
             output_image = model(c_t, args.prompt)
@@ -139,5 +141,6 @@ if __name__ == "__main__":
         default=0.4,
         help="The sketch interpolation guidance amount",
     )
-    parser.add_argument("--seed", type=int, default=42, help="Random seed to be used")
+    parser.add_argument("--seed", type=int, default=42,
+                        help="Random seed to be used")
     args = parser.parse_args()
